@@ -1,0 +1,114 @@
+---
+title: "TUNING RANDOM FOREST HYPERPARAMETERS"
+author: "Chris Bailey"
+date: "`r Sys.Date()`"
+output: github_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE,
+                      warning = FALSE, message = FALSE,
+                      dpi = 180, fig.height = 8, fig.width = 5)
+```
+
+### Modeling Goal:  Let’s build a model to predict which trees are maintained by the San Francisco Department of Public Works and which are not.
+
+### Explore
+
+We can use parse_number() to get a rough estimate of the size of the plot from the plot_size column. Instead of trying any imputation, we will just keep observations with no NA values.
+
+```{r}
+library(tidyverse)
+
+sf_trees <- read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-01-28/sf_trees.csv")
+
+trees_df <- sf_trees %>%
+  mutate(
+    legal_status = case_when(
+      legal_status == "DPW Maintained" ~ legal_status,
+      TRUE ~ "Other"
+    ),
+    plot_size = parse_number(plot_size)
+  ) %>%
+  select(-address) %>%
+  na.omit() %>%
+  mutate_if(is.character, factor)
+
+```
+
+How are these trees distributed across San Francisco?
+
+```{r}
+trees_df %>%
+  ggplot(aes(longitude,latitude, color = legal_status)) +
+  geom_point(size = 0.5, alpha = 0.4) +
+  labs(color = NULL)
+```
+
+What relationships do we see with the caretaker of each tree?
+
+```{r}
+trees_df %>%
+  count(legal_status, caretaker) %>%
+  add_count(caretaker, wt = n, name = "caretaker_count") %>%
+  filter(caretaker_count > 50) %>%
+  group_by(legal_status) %>%
+  mutate(percent_legal = n / sum(n)) %>%
+  ggplot(aes(percent_legal,caretaker,fill = legal_status)) +
+  geom_col(position = "dodge") +
+  labs(fill = "Legal Status",
+       x = "% of trees in each category")
+
+```
+
+
+### Build Model
+
+We can start by loading the tidymodels metapackage, and splitting our data into training and testing sets.
+
+```{r}
+library(tidymodels)
+
+set.seed(123)
+trees_split <- initial_split(trees_df, strata = legal_status)
+trees_train <- training(trees_split)
+trees_test <- testing(trees_split)
+```
+
+Next we build a recipe for data preprocessing.
+
+First, we must tell the recipe() what our model is going to be (using a formula here) and what our training data is.
+
+Next, we update the role for tree_id, since this is a variable we might like to keep around for convenience as an identifier for rows but is not a predictor or outcome.
+
+Next, we use step_other() to collapse categorical levels for species, caretaker, and the site info. Before this step, there were 300+ species!
+
+The date column with when each tree was planted may be useful for fitting this model, but probably not the exact date, given how slowly trees grow. Let’s create a year feature from the date, and then remove the original date variable.
+
+There are many more DPW maintained trees than not, so let’s downsample the data for training.
+
+The object tree_rec is a recipe that has not been trained on data yet (for example, which categorical levels should be collapsed has not been calculated) and tree_prep is an object that has been trained on data.
+
+```{r}
+tree_rec <- recipe(legal_status ~ ., data = trees_train) %>%
+  update_role(tree_id, new_role = "ID") %>%
+  step_other(species, caretaker, threshold = 0.01) %>%
+  step_other(site_info, threshold = 0.005) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_date(date, features = c("year")) %>%
+  step_rm(date) %>%
+  step_downsample(legal_status)
+
+tree_prep <- prep(tree_rec)
+juiced <- juice(tree_prep)
+```
+
+
+
+
+### Train Hyperparameters
+
+### Select the best Model
+
